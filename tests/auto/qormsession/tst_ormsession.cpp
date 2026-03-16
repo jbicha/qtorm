@@ -31,10 +31,14 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QSqlRecord>
+#include <QSqlField>
 
 #include "domain/person.h"
 #include "domain/province.h"
 #include "domain/town.h"
+#include "domain/withnotnull.h"
+#include "domain/withforeignkey.h"
+#include "domain/withunique.h"
 
 #include "private/qormglobal_p.h"
 
@@ -82,6 +86,12 @@ private slots:
     void testSchemaAppendCreatesTablesAndAddsColumns();
     void testSchemaUpdateCreatesTablesAndAddsColumns();
     void testSchemaUpdateRemovesColumns();
+    void testSchemaUpdateUpdatesNotNull();
+    void testSchemaUpdateUpdatesForeignKey();
+    void testSchemaUpdateUpdatesUnique();
+    void testSchemaUpdateUpdatesUniqueMulti();
+
+    void testForeignKeysEnabled();
 };
 
 SqliteSessionTest::SqliteSessionTest()
@@ -99,7 +109,7 @@ void SqliteSessionTest::init()
     if (db.exists())
         QVERIFY(db.remove());
 
-    qRegisterOrmEntity<Town, Province, Person>();
+    qRegisterOrmEntity<Town, Province, Person, WithNotNull, WithForeignKey, WithUnique>();
 }
 
 void SqliteSessionTest::cleanup()
@@ -976,6 +986,208 @@ void SqliteSessionTest::testSchemaUpdateRemovesColumns()
     }
 }
 
+void SqliteSessionTest::testSchemaUpdateUpdatesNotNull()
+{
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");
+        db.setDatabaseName("testdb.db");
+        QVERIFY(db.open());
+
+        static const QStringList statements{
+            "CREATE TABLE WithNotNull(id INTEGER PRIMARY KEY AUTOINCREMENT, data INTEGER)",
+            "INSERT INTO WithNotNull(id, data) VALUES(1, 2)",
+            "INSERT INTO WithNotNull(id, data) VALUES(2, 3)"};
+
+        for (const QString& statement : statements)
+        {
+            qDebug() << "Executing" << statement;
+            QSqlQuery query{db};
+            QVERIFY(query.exec(statement));
+            QCOMPARE(query.lastError().type(), QSqlError::NoError);
+        }
+
+        db.close();
+        QSqlDatabase::removeDatabase(QSqlDatabase::defaultConnection);
+    }
+
+    {
+        QOrmSession session{QOrmSessionConfiguration::fromFile(":/qtorm_update_schema.json")};
+
+        auto result = session.from<WithNotNull>().select();
+        QCOMPARE(result.error().type(), QOrm::ErrorType::None);
+        auto notNullData = result.toVector();
+        QCOMPARE(notNullData.size(), 2);
+        QCOMPARE(notNullData[0]->id(), 1);
+        QCOMPARE(notNullData[1]->id(), 2);
+    }
+
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");
+        db.setDatabaseName("testdb.db");
+        QVERIFY(db.open());
+
+        QVERIFY(db.tables().contains("WithNotNull"));
+        QSqlRecord record = db.record("WithNotNull");
+        QCOMPARE(record.count(), 2);
+        QVERIFY(record.contains("id"));
+        QVERIFY(record.contains("data"));
+        QCOMPARE(record.field("data").requiredStatus(), QSqlField::Required);
+
+        db.close();
+        QSqlDatabase::removeDatabase(QSqlDatabase::defaultConnection);
+    }
+}
+
+void SqliteSessionTest::testSchemaUpdateUpdatesForeignKey()
+{
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");
+        db.setDatabaseName("testdb.db");
+        QVERIFY(db.open());
+
+        static const QStringList statements{
+            "CREATE TABLE WithNotNull(id INTEGER PRIMARY KEY AUTOINCREMENT, data INTEGER NOT NULL)",
+            "INSERT INTO WithNotNull(id, data) VALUES(1, 2)",
+            "CREATE TABLE WithForeignKey(id INTEGER PRIMARY KEY AUTOINCREMENT, data_id INTEGER)",
+            "INSERT INTO WithForeignKey(id, data_id) VALUES(1, 1)",
+            "INSERT INTO WithForeignKey(id, data_id) VALUES(2, 1)"};
+
+        for (const QString& statement : statements)
+        {
+            qDebug() << "Executing" << statement;
+            QSqlQuery query{db};
+            QVERIFY(query.exec(statement));
+            QCOMPARE(query.lastError().type(), QSqlError::NoError);
+        }
+
+        db.close();
+        QSqlDatabase::removeDatabase(QSqlDatabase::defaultConnection);
+    }
+
+    {
+        QOrmSession session{QOrmSessionConfiguration::fromFile(":/qtorm_update_schema.json")};
+
+        auto result = session.from<WithForeignKey>().select();
+        QCOMPARE(result.error().type(), QOrm::ErrorType::None);
+        auto fkData = result.toVector();
+        QCOMPARE(fkData.size(), 2);
+        QCOMPARE(fkData[0]->id(), 1);
+        QCOMPARE(fkData[1]->id(), 2);
+    }
+
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");
+        db.setDatabaseName("testdb.db");
+        QVERIFY(db.open());
+
+        QSqlQuery query{db};
+        QVERIFY(query.exec(R"(SELECT 1 FROM pragma_foreign_key_list('WithForeignKey') WHERE "from" = 'data_id';)"));
+        QCOMPARE(query.lastError().type(), QSqlError::NoError);
+        QVERIFY(query.first());
+
+        db.close();
+        QSqlDatabase::removeDatabase(QSqlDatabase::defaultConnection);
+    }
+}
+
+void SqliteSessionTest::testSchemaUpdateUpdatesUnique()
+{
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");
+        db.setDatabaseName("testdb.db");
+        QVERIFY(db.open());
+
+        static const QStringList statements{
+            "CREATE TABLE WithUnique(id INTEGER PRIMARY KEY AUTOINCREMENT, single TEXT, multione TEXT, multitwo TEXT, UNIQUE(multione, multitwo))",
+            "INSERT INTO WithUnique(id, single, multione, multitwo) VALUES(1, 'test', 'test', 'test')",
+            "INSERT INTO WithUnique(id, single, multione, multitwo) VALUES(2, 'test2', 'test', 'test2')"};
+
+        for (const QString& statement : statements)
+        {
+            qDebug() << "Executing" << statement;
+            QSqlQuery query{db};
+            QVERIFY(query.exec(statement));
+            QCOMPARE(query.lastError().type(), QSqlError::NoError);
+        }
+
+        db.close();
+        QSqlDatabase::removeDatabase(QSqlDatabase::defaultConnection);
+    }
+
+    {
+        QOrmSession session{QOrmSessionConfiguration::fromFile(":/qtorm_update_schema.json")};
+
+        auto result = session.from<WithUnique>().select();
+        QCOMPARE(result.error().type(), QOrm::ErrorType::None);
+        auto fkData = result.toVector();
+        QCOMPARE(fkData.size(), 2);
+        QCOMPARE(fkData[0]->id(), 1);
+        QCOMPARE(fkData[1]->id(), 2);
+    }
+
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");
+        db.setDatabaseName("testdb.db");
+        QVERIFY(db.open());
+
+        QSqlQuery query{db};
+        QVERIFY(!query.exec("INSERT INTO WithUnique(id, single, multione, multitwo) VALUES(3, 'test', 'test', 'test3')"));
+        QCOMPARE(query.lastError().type(), QSqlError::ConnectionError);
+
+        db.close();
+        QSqlDatabase::removeDatabase(QSqlDatabase::defaultConnection);
+    }
+}
+
+void SqliteSessionTest::testSchemaUpdateUpdatesUniqueMulti()
+{
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");
+        db.setDatabaseName("testdb.db");
+        QVERIFY(db.open());
+
+        static const QStringList statements{
+            "CREATE TABLE WithUnique(id INTEGER PRIMARY KEY AUTOINCREMENT, single TEXT UNIQUE, multione TEXT UNIQUE, multitwo TEXT)",
+            "INSERT INTO WithUnique(id, single, multione, multitwo) VALUES(1, 'test', 'test', 'test')",
+            "INSERT INTO WithUnique(id, single, multione, multitwo) VALUES(2, 'test2', 'test2', 'test')"};
+
+        for (const QString& statement : statements)
+        {
+            qDebug() << "Executing" << statement;
+            QSqlQuery query{db};
+            QVERIFY(query.exec(statement));
+            QCOMPARE(query.lastError().type(), QSqlError::NoError);
+        }
+
+        db.close();
+        QSqlDatabase::removeDatabase(QSqlDatabase::defaultConnection);
+    }
+
+    {
+        QOrmSession session{QOrmSessionConfiguration::fromFile(":/qtorm_update_schema.json")};
+
+        auto result = session.from<WithUnique>().select();
+        QCOMPARE(result.error().type(), QOrm::ErrorType::None);
+        auto fkData = result.toVector();
+        QCOMPARE(fkData.size(), 2);
+        QCOMPARE(fkData[0]->id(), 1);
+        QCOMPARE(fkData[1]->id(), 2);
+    }
+
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");
+        db.setDatabaseName("testdb.db");
+        QVERIFY(db.open());
+
+        QSqlQuery query{db};
+        QVERIFY(query.exec("INSERT INTO WithUnique(id, single, multione, multitwo) VALUES(3, 'test3', 'test', 'test3')"));
+        QCOMPARE(query.lastError().type(), QSqlError::NoError);
+
+        db.close();
+        QSqlDatabase::removeDatabase(QSqlDatabase::defaultConnection);
+    }
+}
+
 void SqliteSessionTest::testRemoveInstance()
 {
     QOrmSession session;
@@ -1048,6 +1260,24 @@ void SqliteSessionTest::testRemoveWithFilter()
         QVERIFY(removedInstances.contains(linz));
         qDeleteAll(query.toVector());
     }
+}
+
+void SqliteSessionTest::testForeignKeysEnabled()
+{
+    QOrmSqliteConfiguration sqliteConfiguration{};
+    sqliteConfiguration.setForeignKeysEnabled(true);
+    sqliteConfiguration.setDatabaseName(":memory:");
+    QOrmSqliteProvider* sqliteProvider = new QOrmSqliteProvider{sqliteConfiguration};
+    QOrmSessionConfiguration sessionConfiguration{sqliteProvider, true};
+    QOrmSession session{sessionConfiguration};
+
+    QOrmSqliteProvider* provider =
+        static_cast<QOrmSqliteProvider*>(session.configuration().provider());
+    provider->connectToBackend();
+    QSqlQuery query{provider->database()};
+
+    QVERIFY(query.exec("PRAGMA foreign_keys") && query.next());
+    QCOMPARE(query.value("foreign_keys").toBool(), true);
 }
 
 QTEST_GUILESS_MAIN(SqliteSessionTest)

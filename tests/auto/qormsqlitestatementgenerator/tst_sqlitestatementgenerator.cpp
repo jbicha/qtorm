@@ -73,6 +73,7 @@ private slots:
 
     void testAlterTableAddColumn();
     void testAlterTableAddColumnWithReference();
+    void testAlterTableAddColumnWithForeignKey();
 
     void testSelectWithLimitOffset();
     void testSelectWithNamespace();
@@ -145,6 +146,7 @@ void SqliteStatementGenerator::testInsertForCustomizedEntity()
     hagenberg->setCommunityId(4232);
     hagenberg->setName("Hagenberg");
     hagenberg->setPopulation(4000);
+    hagenberg->setNeverNull(5);
 
     QVariantMap boundParameters;
     QString statement =
@@ -152,11 +154,12 @@ void SqliteStatementGenerator::testInsertForCustomizedEntity()
 
     QCOMPARE(
         statement,
-        R"(INSERT INTO "communities"("community_id","name","population","province_id") VALUES(:community_id,:name,:population,:province_id))");
+        R"(INSERT INTO "communities"("community_id","name","population","province_id","nevernull","code") VALUES(:community_id,:name,:population,:province_id,:nevernull,:code))");
     QCOMPARE(boundParameters[":community_id"], 4232);
     QCOMPARE(boundParameters[":name"], "Hagenberg");
     QCOMPARE(boundParameters[":population"], 4000);
     QCOMPARE(boundParameters[":province_id"], QVariant::fromValue(nullptr));
+    QCOMPARE(boundParameters[":nevernull"], 5);
 }
 
 void SqliteStatementGenerator::testInsertWithNamespace()
@@ -298,7 +301,7 @@ void SqliteStatementGenerator::testUpdateWithManyToOne()
                                                           upperAustria.get(),
                                                           boundParameters);
 
-    QCOMPARE(statement, R"(UPDATE Province SET name = :name WHERE "id" = :id)");
+    QCOMPARE(statement, R"(UPDATE "Province" SET name = :name WHERE "id" = :id)");
     QCOMPARE(boundParameters[":name"], QString::fromUtf8("Oberösterreich"));
     QCOMPARE(boundParameters[":id"], 1);
 }
@@ -316,7 +319,7 @@ void SqliteStatementGenerator::testUpdateWithOneToMany()
         generator.generateUpdateStatement(cache.get<Town>(), hagenberg.get(), boundParameters);
 
     QCOMPARE(statement,
-             R"(UPDATE Town SET name = :name,province_id = :province_id WHERE "id" = :id)");
+             R"(UPDATE "Town" SET name = :name,province_id = :province_id WHERE "id" = :id)");
     QCOMPARE(boundParameters[":name"], QString::fromUtf8("Hagenberg"));
     QCOMPARE(boundParameters[":province_id"], 1);
     QCOMPARE(boundParameters[":id"], 2);
@@ -334,7 +337,7 @@ void SqliteStatementGenerator::testUpdateWithOneToManyNullReference()
         generator.generateUpdateStatement(cache.get<Town>(), hagenberg.get(), boundParameters);
 
     QCOMPARE(statement,
-             R"(UPDATE Town SET name = :name,province_id = :province_id WHERE "id" = :id)");
+             R"(UPDATE "Town" SET name = :name,province_id = :province_id WHERE "id" = :id)");
     QCOMPARE(boundParameters[":name"], QString::fromUtf8("Hagenberg"));
     QCOMPARE(boundParameters[":province_id"], QVariant::fromValue(nullptr));
     QCOMPARE(boundParameters[":id"], 2);
@@ -403,7 +406,7 @@ void SqliteStatementGenerator::testCreateTableForCustomizedEntity()
     QOrmMetadataCache cache;
     QCOMPARE(
         QOrmSqliteStatementGenerator{}.generateCreateTableStatement(cache.get<Community>()),
-        R"(CREATE TABLE "communities"("community_id" INTEGER PRIMARY KEY,"name" TEXT,"population" INTEGER,"province_id" INTEGER))");
+        R"(CREATE TABLE "communities"("community_id" INTEGER PRIMARY KEY,"name" TEXT,"population" INTEGER,"province_id" INTEGER REFERENCES "Province" ( "id" ),"nevernull" INTEGER NOT NULL,"code" TEXT UNIQUE,UNIQUE( "name","province_id" )))");
 }
 
 void SqliteStatementGenerator::testCreateTableWithQVariant()
@@ -437,7 +440,7 @@ void SqliteStatementGenerator::testAlterTableAddColumn()
     QString actual = QOrmSqliteStatementGenerator{}.generateAlterTableAddColumnStatement(
         cache.get<Person>(), *cache.get<Person>().classPropertyMapping("name"));
 
-    QCOMPARE(actual, R"(ALTER TABLE "Person" ADD COLUMN "name" TEXT)");
+    QCOMPARE(actual, R"(ALTER TABLE "Person" ADD COLUMN "name" TEXT )");
 }
 
 void SqliteStatementGenerator::testAlterTableAddColumnWithReference()
@@ -446,7 +449,16 @@ void SqliteStatementGenerator::testAlterTableAddColumnWithReference()
     QString actual = QOrmSqliteStatementGenerator{}.generateAlterTableAddColumnStatement(
         cache.get<Town>(), *cache.get<Town>().classPropertyMapping("province"));
 
-    QCOMPARE(actual, R"(ALTER TABLE "Town" ADD COLUMN "province_id" INTEGER)");
+    QCOMPARE(actual, R"(ALTER TABLE "Town" ADD COLUMN "province_id" INTEGER )");
+}
+
+void SqliteStatementGenerator::testAlterTableAddColumnWithForeignKey()
+{
+    QOrmMetadataCache cache;
+    QString actual = QOrmSqliteStatementGenerator{}.generateAlterTableAddColumnStatement(
+        cache.get<Community>(), *cache.get<Community>().classPropertyMapping("province"));
+
+    QCOMPARE(actual, R"(ALTER TABLE "communities" ADD COLUMN "province_id" INTEGER REFERENCES "Province" ( "id" ))");
 }
 
 void SqliteStatementGenerator::testSelectWithLimitOffset()

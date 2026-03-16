@@ -204,7 +204,7 @@ QString QOrmSqliteStatementGenerator::generateUpdateStatement(const QOrmMetadata
     QString whereClause =
         generateWhereClause(QOrmFilter{*relation.objectIdMapping() == objectId}, boundParameters);
 
-    QStringList parts = {"UPDATE", relation.tableName(), "SET", setList.join(','), whereClause};
+    QStringList parts = {"UPDATE", escapeIdentifier(relation.tableName()), "SET", setList.join(','), whereClause};
 
     return parts.join(QChar(' '));
 }
@@ -512,6 +512,7 @@ QString QOrmSqliteStatementGenerator::generateCreateTableStatement(
     std::optional<QString> overrideTableName)
 {
     QStringList fields;
+    QMap<QString, QStringList> uniqueGroups;
 
     for (const QOrmPropertyMapping& mapping : entity.propertyMappings())
     {
@@ -526,6 +527,13 @@ QString QOrmSqliteStatementGenerator::generateCreateTableStatement(
 
             columnDefs += {escapeIdentifier(mapping.tableFieldName()),
                            toSqliteType(mapping.referencedEntity()->objectIdMapping()->dataType())};
+
+            if (mapping.hasForeignKey())
+                columnDefs += {QStringLiteral("REFERENCES"),
+                              escapeIdentifier(mapping.referencedEntity()->tableName()),
+                              QStringLiteral("("),
+                              escapeIdentifier(mapping.referencedEntity()->objectIdMapping()->tableFieldName()),
+                              QStringLiteral(")")};
         }
         else
         {
@@ -539,15 +547,37 @@ QString QOrmSqliteStatementGenerator::generateCreateTableStatement(
                 columnDefs.push_back(QStringLiteral("AUTOINCREMENT"));
         }
 
+        if (mapping.isNotNull())
+            columnDefs.push_back(QStringLiteral("NOT NULL"));
+
+        if (mapping.isUnique())
+        {
+            if (mapping.uniqueGroup().isEmpty())
+            {
+                columnDefs.push_back(QStringLiteral("UNIQUE"));
+            }
+            else
+            {
+                uniqueGroups[mapping.uniqueGroup()].push_back(escapeIdentifier(mapping.tableFieldName()));
+            }
+        }
+
         fields.push_back(columnDefs.join(' '));
+    }
+
+    for (const QStringList& columns : std::as_const(uniqueGroups)) {
+        QStringList uniqueDef = {QStringLiteral("UNIQUE("),
+                                columns.join(','),
+                                QStringLiteral(")")};
+        fields.push_back(uniqueDef.join(' '));
     }
 
     QString fieldsStr = fields.join(',');
 
     Q_ASSERT(!overrideTableName.has_value() || !overrideTableName->isEmpty());
-    QString effectiveTableName{overrideTableName.value_or(escapeIdentifier(entity.tableName()))};
+    QString effectiveTableName{overrideTableName.value_or(entity.tableName())};
 
-    return QStringLiteral("CREATE TABLE %1(%2)").arg(effectiveTableName, fieldsStr);
+    return QStringLiteral("CREATE TABLE %1(%2)").arg(escapeIdentifier(effectiveTableName), fieldsStr);
 }
 
 QString QOrmSqliteStatementGenerator::generateAlterTableAddColumnStatement(
@@ -568,10 +598,23 @@ QString QOrmSqliteStatementGenerator::generateAlterTableAddColumnStatement(
         dataType = toSqliteType(propertyMapping.dataType());
     }
 
-    return QStringLiteral("ALTER TABLE %1 ADD COLUMN %2 %3")
+    QString possibleFk = "";
+
+    if (propertyMapping.isReference() && propertyMapping.hasForeignKey())
+    {
+        QStringList fkDef = {QStringLiteral("REFERENCES"),
+                            escapeIdentifier(propertyMapping.referencedEntity()->tableName()),
+                            QStringLiteral("("),
+                            escapeIdentifier(propertyMapping.referencedEntity()->objectIdMapping()->tableFieldName()),
+                            QStringLiteral(")")};
+        possibleFk = fkDef.join(' ');
+    }
+
+    return QStringLiteral("ALTER TABLE %1 ADD COLUMN %2 %3 %4")
         .arg(escapeIdentifier(relation.tableName()),
              escapeIdentifier(propertyMapping.tableFieldName()),
-             dataType);
+             dataType,
+             possibleFk);
 }
 
 QString QOrmSqliteStatementGenerator::generateDropTableStatement(const QOrmMetadata& entity)

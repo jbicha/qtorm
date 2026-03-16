@@ -74,6 +74,8 @@ class QOrmSqliteProviderPrivate
     QString toSqlType(QMetaType::Type type);
     [[nodiscard]] bool canConvertFromSqliteToQProperty(QMetaType::Type fromSqlType,
                                                        QMetaType::Type toQPropertyType);
+    [[nodiscard]] bool fieldHasForeignKey(const QSqlField& field);
+    [[nodiscard]] QString fieldGetUniqueConstraint(const QSqlField& field);
 
     Q_REQUIRED_RESULT
     QOrmError lastDatabaseError() const;
@@ -139,6 +141,40 @@ bool QOrmSqliteProviderPrivate::canConvertFromSqliteToQProperty(QMetaType::Type 
 #else
     return QMetaType::canConvert(QMetaType{fromSqlType}, QMetaType{toQPropertyType});
 #endif
+}
+
+bool QOrmSqliteProviderPrivate::fieldHasForeignKey(const QSqlField& field)
+{
+    QSqlQuery query = prepareAndExecute(
+        R"(SELECT 1 FROM pragma_foreign_key_list(:table_name) WHERE "from" = :column)",
+        {{":table_name", field.tableName()},{":column", field.name()}});
+
+    // query.size() is not supported for sqlite, but first() will confirm whether we got at least
+    // one result which is what we care about
+    return query.first();
+}
+
+QString QOrmSqliteProviderPrivate::fieldGetUniqueConstraint(const QSqlField& field)
+{
+    // This query returns a string representing the columns in a unique index for the field
+    // The column names are also wrapped between ! to avoid partial matches with LIKE
+    // This can then be used to check if the schema needs updating
+    QSqlQuery query = prepareAndExecute(
+        R"(
+            SELECT group_concat(printf('!%s!', index_info.name)) AS columns
+            FROM pragma_index_list(:table_name) AS index_list,
+                 pragma_index_info(index_list.name) AS index_info
+            WHERE index_list.[unique] = 1
+            GROUP BY index_list.name
+            HAVING columns LIKE printf('%%!%s!%%', :column))",
+        {{":table_name", field.tableName()},{":column", field.name()}});
+
+    if (!query.first())
+    {
+        return "";
+    }
+
+    return query.record().field("columns").value().toString();
 }
 
 QOrmError QOrmSqliteProviderPrivate::lastDatabaseError() const
@@ -570,6 +606,14 @@ QOrmError QOrmSqliteProviderPrivate::updateSchema(const QOrmRelation& relation)
                         << " mapping.";
                     updateNeeded = true;
                 }
+                else if (fieldHasForeignKey(field) != mapping->hasForeignKey())
+                {
+                    qCDebug(qtorm).noquote().nospace()
+                        << "updating table " << relation.mapping()->tableName() << ": field "
+                        << field.name() << " foreign key (" << !mapping->hasForeignKey()
+                        << ") differs from the mapping (" << mapping->hasForeignKey() << ")";
+                    updateNeeded = true;
+                }
             }
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
             else if (!canConvertFromSqliteToQProperty(static_cast<QMetaType::Type>(field.type()),
@@ -585,6 +629,64 @@ QOrmError QOrmSqliteProviderPrivate::updateSchema(const QOrmRelation& relation)
                     << relation.mapping()->className() << "::" << mapping->classPropertyName()
                     << " are incompatible.";
                 updateNeeded = true;
+            }
+            else if ((field.requiredStatus() == QSqlField::Required) != mapping->isNotNull())
+            {
+                qCDebug(qtorm).noquote().nospace()
+                    << "updating table " << relation.mapping()->tableName() << ": field "
+                    << field.name() << " nullability (" << field.requiredStatus()
+                    << ") differs from the mapping (" << mapping->isNotNull() << ")";
+                updateNeeded = true;
+            }
+            else
+            {
+                QString fieldUniqueColumns = fieldGetUniqueConstraint(field);
+
+                if (mapping->isUnique() != !fieldUniqueColumns.isEmpty() ||
+                    (mapping->isUnique() && mapping->uniqueGroup().isEmpty() && fieldUniqueColumns != QString("!%1!").arg(field.name())))
+                {
+                    qCDebug(qtorm).noquote().nospace()
+                        << "updating table " << relation.mapping()->tableName() << ": field "
+                        << field.name() << " unique constraint differs from the mapping ("
+                        << mapping->isUnique() << "," << mapping->uniqueGroup() << ")";
+                    updateNeeded = true;
+                }
+                else if (mapping->isUnique() && !mapping->uniqueGroup().isEmpty())
+                {
+                    QStringList columnsInGroup = fieldUniqueColumns.split(",");
+                    for (auto& column : columnsInGroup)
+                        column.remove('!');
+
+                    for (const auto& column : columnsInGroup) {
+                        const QOrmPropertyMapping* groupColumnMapping =
+                            relation.mapping()->tableFieldMapping(column);
+
+                        if (groupColumnMapping == nullptr || !groupColumnMapping->isUnique() ||
+                            groupColumnMapping->uniqueGroup() != mapping->uniqueGroup())
+                        {
+                            qCDebug(qtorm).noquote().nospace()
+                                << "updating table " << relation.mapping()->tableName() << ": field "
+                                << column << " should be in the same unique constraint as "
+                                << field.name();
+                            updateNeeded = true;
+                            break;
+                        }
+                    }
+
+                    for (const auto& propertyMapping : relation.mapping()->propertyMappings())
+                    {
+                        if (propertyMapping.isUnique() && propertyMapping.uniqueGroup() == mapping->uniqueGroup() &&
+                            !columnsInGroup.contains(propertyMapping.tableFieldName()))
+                        {
+                            qCDebug(qtorm).noquote().nospace()
+                                << "updating table " << relation.mapping()->tableName() << ": field "
+                                << propertyMapping.tableFieldName() << " should be in the same unique constraint as "
+                                << field.name();
+                            updateNeeded = true;
+                            break;
+                        }
+                    }
+                }
             }
         }
 
@@ -1120,6 +1222,11 @@ QOrmError QOrmSqliteProvider::connectToBackend()
         if (!d->m_database.open())
         {
             return d->lastDatabaseError();
+        }
+
+        if (d->m_sqlConfiguration.foreignKeysEnabled())
+        {
+            return d->setForeignKeysEnabled(true);
         }
     }
 

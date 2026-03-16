@@ -45,6 +45,10 @@ public:
                         QMetaType::Type dataType,
                         const QOrmMetadata* referencedEntity,
                         bool isTransient,
+                        bool isNotNull,
+                        bool hasForeignKey,
+                        bool isUnique,
+                        QString uniqueGroup,
                         QOrmUserMetadata userMetadata);
     QOrmPropertyMapping(const QOrmPropertyMapping&);
     QOrmPropertyMapping(QOrmPropertyMapping&&);
@@ -64,6 +68,10 @@ public:
     [[nodiscard]] bool isReference() const;
     [[nodiscard]] const QOrmMetadata* referencedEntity() const;
     [[nodiscard]] bool isTransient() const;
+    [[nodiscard]] bool isNotNull() const;
+    [[nodiscard]] bool hasForeignKey() const;
+    [[nodiscard]] bool isUnique() const;
+    [[nodiscard]] QString uniqueGroup() const;
     [[nodiscard]] const QOrmUserMetadata& userMetadata() const;
 
 private:

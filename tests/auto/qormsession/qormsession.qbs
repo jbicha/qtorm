@@ -10,6 +10,9 @@ QtApplication {
         "domain/person.cpp", "domain/person.h",
         "domain/province.cpp", "domain/province.h",
         "domain/town.cpp", "domain/town.h",
+        "domain/withnotnull.cpp", "domain/withnotnull.h",
+        "domain/withforeignkey.cpp", "domain/withforeignkey.h",
+        "domain/withunique.cpp", "domain/withunique.h",
         "tst_ormsession.cpp",
         "ormsession.qrc"]
 }
